@@ -8,6 +8,10 @@ class Settings(BaseSettings):
         "postgresql+psycopg2://habicapital:habicapital@localhost:5432/habicapital"
     )
     external_account_name: str = "external"
+    cors_allow_origins: list[str] = [
+        "http://localhost:5173",  # Vite dev server default port
+        "http://127.0.0.1:5173",
+    ]
 
 
 settings = Settings()
