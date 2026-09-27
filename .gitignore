@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
+.DS_Store
+
+# Bitácora local de trabajo (decisiones, justificaciones, uso de IA).
+.dev-notes/
