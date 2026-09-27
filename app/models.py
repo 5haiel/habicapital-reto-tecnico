@@ -40,6 +40,22 @@ class Account(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class User(SQLModel, table=True):
+    """Identity of a person, kept separate from Account on purpose: Account
+    is the ledger's balance holder (and `external` has no owner), User is
+    who can log in and act on exactly one Account.
+    """
+
+    __tablename__ = "app_user"  # `user` is a reserved word in Postgres
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    email: str = Field(unique=True, index=True)  # always stored lowercased
+    password_hash: str
+    account_id: int = Field(foreign_key="account.id", unique=True)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Tag(SQLModel, table=True):
     __tablename__ = "tag"
 

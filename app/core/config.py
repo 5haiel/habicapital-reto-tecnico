@@ -13,5 +13,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
+    # Dev-only default so the project runs out of the box; any real
+    # deployment must override it via JWT_SECRET.
+    jwt_secret: str = "dev-only-insecure-secret-change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    session_ttl_minutes: int = 60 * 12
+    session_cookie_name: str = "habi_session"
+    # False locally because the dev server and Docker demo are plain http;
+    # a cookie marked Secure would never be sent back over http.
+    session_cookie_secure: bool = False
+
 
 settings = Settings()

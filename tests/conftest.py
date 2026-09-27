@@ -16,7 +16,7 @@
   Postgres connection.
 """
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -67,10 +67,19 @@ def session(test_engine) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def client(session: Session) -> Generator[TestClient, None, None]:
+def make_client(session: Session) -> Generator[Callable[[], TestClient], None, None]:
+    """Factory for independent clients — each has its own cookie jar, so
+    each one can be logged in as a different user within the same test.
+    """
+
     def get_session_override() -> Generator[Session, None, None]:
         yield session
 
     app.dependency_overrides[get_session] = get_session_override
-    yield TestClient(app)
+    yield lambda: TestClient(app)
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client(make_client) -> TestClient:
+    return make_client()

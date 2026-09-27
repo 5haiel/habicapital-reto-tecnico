@@ -1,6 +1,9 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
@@ -8,33 +11,10 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.db import engine
 from app.models import Account
-from app.routers import accounts, expenses, movements, tags
-from app.services.errors import (
-    AccountNotFoundError,
-    DomainError,
-    ExpenseNotFoundError,
-    ExpenseShareNotFoundError,
-    ExternalAccountRestrictedError,
-    InsufficientFundsError,
-    MoneySafetyInvariantError,
-    SameAccountError,
-)
+from app.routers import accounts, auth, expenses, movements, tags
+from app.services.errors import DomainError, MoneySafetyInvariantError
 
-# Maps each domain error to the HTTP status that represents it. 404 for a
-# missing resource; 422 for a request that is well-formed but violates a
-# business rule; 500 for MoneySafetyInvariantError specifically, because
-# that one means the application's own pre-checks let something through
-# that the database then had to reject — that is a bug, not a client error,
-# and should not be reported as if the client did something wrong.
-_DOMAIN_ERROR_STATUS: dict[type[DomainError], int] = {
-    AccountNotFoundError: 404,
-    ExpenseNotFoundError: 404,
-    ExpenseShareNotFoundError: 404,
-    InsufficientFundsError: 422,
-    SameAccountError: 422,
-    ExternalAccountRestrictedError: 422,
-    MoneySafetyInvariantError: 500,
-}
+logger = logging.getLogger(__name__)
 
 
 def seed_external_account() -> None:
@@ -69,10 +49,31 @@ app.add_middleware(
 
 @app.exception_handler(DomainError)
 def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
-    status_code = _DOMAIN_ERROR_STATUS.get(type(exc), 400)
-    return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+    if isinstance(exc, MoneySafetyInvariantError):
+        logger.error("Money-safety invariant violated: %s", exc.internal_detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message, "code": exc.code},
+    )
 
 
+@app.exception_handler(RequestValidationError)
+def handle_validation_error(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    # Same {detail, code} shape as domain errors so the client has a single
+    # error contract; the raw field errors stay available under `errors`.
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Revisa los datos enviados.",
+            "code": "validation_error",
+            "errors": jsonable_encoder(exc.errors()),
+        },
+    )
+
+
+app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(movements.router)
 app.include_router(tags.router)
