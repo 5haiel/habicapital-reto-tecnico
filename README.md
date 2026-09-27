@@ -1,6 +1,6 @@
 # HabiCapital · Reto técnico Practicantes 2027
 
-Sistema de transferencias P2P (tipo "billetera entre amigos") con ledger de doble
+Sistema de transferencias P2P con ledger de doble
 entrada, construido para el reto técnico de HabiCapital.
 
 ## Stack
