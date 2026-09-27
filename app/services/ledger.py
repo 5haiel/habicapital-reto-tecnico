@@ -10,6 +10,7 @@ from app.models import Account, LedgerEntry, Movement, MovementType, Tag
 from app.services.errors import (
     AccountNotFoundError,
     ExternalAccountRestrictedError,
+    IdempotencyKeyConflictError,
     InsufficientFundsError,
     MoneySafetyInvariantError,
     SameAccountError,
@@ -69,6 +70,30 @@ def find_movement_by_idempotency_key(session: Session, key: str) -> Movement | N
     return session.exec(select(Movement).where(Movement.idempotency_key == key)).first()
 
 
+def _replay_or_conflict(
+    existing: Movement,
+    *,
+    type: MovementType,
+    from_account_id: int,
+    to_account_id: int,
+    amount: int,
+) -> Movement:
+    """A key that was already processed returns the original movement — but
+    only if it describes the same operation. A reused key with a different
+    payload is a client bug, and silently returning the old movement would
+    make the client believe the new operation happened.
+    """
+    same_operation = (
+        existing.type == type
+        and existing.from_account_id == from_account_id
+        and existing.to_account_id == to_account_id
+        and existing.amount == amount
+    )
+    if not same_operation:
+        raise IdempotencyKeyConflictError()
+    return existing
+
+
 def _execute_movement(
     session: Session,
     *,
@@ -88,7 +113,13 @@ def _execute_movement(
     # money twice.
     existing = find_movement_by_idempotency_key(session, idempotency_key)
     if existing is not None:
-        return existing
+        return _replay_or_conflict(
+            existing,
+            type=type,
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            amount=amount,
+        )
 
     if from_account_id == to_account_id:
         raise SameAccountError()
@@ -175,7 +206,13 @@ def _execute_movement(
         #      fail loudly rather than be swallowed as a "duplicate".
         retry_existing = find_movement_by_idempotency_key(session, idempotency_key)
         if retry_existing is not None:
-            return retry_existing
+            return _replay_or_conflict(
+                retry_existing,
+                type=type,
+                from_account_id=from_account_id,
+                to_account_id=to_account_id,
+                amount=amount,
+            )
         raise MoneySafetyInvariantError(str(exc)) from exc
 
     session.refresh(movement)

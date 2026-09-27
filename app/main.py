@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.db import engine
 from app.models import Account
-from app.routers import accounts, auth, expenses, movements, tags
+from app.routers import auth, expenses, me, movements, tags, users
 from app.services.errors import DomainError, MoneySafetyInvariantError
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,8 @@ def handle_validation_error(
 
 
 app.include_router(auth.router)
-app.include_router(accounts.router)
+app.include_router(me.router)
+app.include_router(users.router)
 app.include_router(movements.router)
 app.include_router(tags.router)
 app.include_router(expenses.router)

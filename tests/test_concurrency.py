@@ -185,7 +185,10 @@ def test_concurrent_settle_of_the_same_share_pays_it_exactly_once(test_engine):
         def attempt(_: int) -> int:
             with Session(test_engine) as s:
                 share = expenses.settle_share(
-                    s, expense_id=expense_id, share_id=share_id
+                    s,
+                    expense_id=expense_id,
+                    share_id=share_id,
+                    acting_account_id=debtor_id,
                 )
                 return share.settlement_movement_id
 

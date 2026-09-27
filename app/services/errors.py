@@ -75,6 +75,29 @@ class ExpenseShareNotFoundError(DomainError):
         super().__init__("Esa parte del gasto no existe.")
 
 
+class IdempotencyKeyConflictError(DomainError):
+    """The same Idempotency-Key arrived with a different operation. Returning
+    the original movement would make the client believe the *new* request
+    succeeded when nothing happened, so this fails loudly instead.
+    """
+
+    code = "idempotency_key_conflict"
+    status_code = 422
+
+    def __init__(self):
+        super().__init__(
+            "Esta solicitud ya se usó para otra operación. Intenta de nuevo."
+        )
+
+
+class InvalidExpenseParticipantsError(DomainError):
+    code = "invalid_expense_participants"
+    status_code = 422
+
+    def __init__(self, message: str):
+        super().__init__(message)
+
+
 class EmailAlreadyRegisteredError(DomainError):
     code = "email_already_registered"
     status_code = 409

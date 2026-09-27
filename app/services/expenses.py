@@ -5,22 +5,83 @@ the single source of truth for money and this module never duplicates that
 logic. See decisions.md, "Feature elegida: tags + split de gasto".
 """
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.models import Expense, ExpenseShare, ExpenseShareStatus
+from app.models import Account, Expense, ExpenseShare, ExpenseShareStatus
 from app.services import ledger
-from app.services.errors import ExpenseNotFoundError, ExpenseShareNotFoundError
+from app.services.errors import (
+    AccountNotFoundError,
+    ExpenseNotFoundError,
+    ExpenseShareNotFoundError,
+    ForbiddenError,
+    InvalidExpenseParticipantsError,
+)
 
 
-def get_expense(session: Session, expense_id: int) -> Expense:
+def _involves(session: Session, expense: Expense, account_id: int) -> bool:
+    if expense.payer_account_id == account_id:
+        return True
+    return (
+        session.exec(
+            select(ExpenseShare.id).where(
+                ExpenseShare.expense_id == expense.id,
+                ExpenseShare.account_id == account_id,
+            )
+        ).first()
+        is not None
+    )
+
+
+def get_expense(
+    session: Session, expense_id: int, *, viewer_account_id: int
+) -> Expense:
+    """404 (not 403) for expenses the viewer isn't part of, so ids of other
+    people's expenses can't be probed for existence.
+    """
     expense = session.get(Expense, expense_id)
-    if expense is None:
+    if expense is None or not _involves(session, expense, viewer_account_id):
         raise ExpenseNotFoundError(expense_id)
     return expense
 
 
-def list_expenses(session: Session) -> list[Expense]:
-    return list(session.exec(select(Expense).order_by(Expense.created_at.desc())).all())
+def list_expenses_for_account(session: Session, account_id: int) -> list[Expense]:
+    participant_of = select(ExpenseShare.expense_id).where(
+        ExpenseShare.account_id == account_id
+    )
+    return list(
+        session.exec(
+            select(Expense)
+            .where(
+                or_(
+                    Expense.payer_account_id == account_id,
+                    Expense.id.in_(participant_of),
+                )
+            )
+            .order_by(Expense.created_at.desc(), Expense.id.desc())
+        ).all()
+    )
+
+
+def _validate_participants(
+    session: Session, payer_account_id: int, participant_ids: list[int]
+) -> None:
+    if len(set(participant_ids)) != len(participant_ids):
+        raise InvalidExpenseParticipantsError(
+            "Cada persona puede aparecer una sola vez en el gasto."
+        )
+    if payer_account_id in participant_ids:
+        raise InvalidExpenseParticipantsError("Quien pagó no puede deberse a sí mismo.")
+    found = session.exec(select(Account).where(Account.id.in_(participant_ids))).all()
+    found_by_id = {a.id: a for a in found}
+    for account_id in participant_ids:
+        account = found_by_id.get(account_id)
+        if account is None:
+            raise AccountNotFoundError(account_id)
+        if account.is_external:
+            raise InvalidExpenseParticipantsError(
+                "Esa cuenta no puede participar en un gasto."
+            )
 
 
 def get_expense_shares(session: Session, expense_id: int) -> list[ExpenseShare]:
@@ -43,6 +104,7 @@ def create_expense(
     # ever used later as the *destination* of a settlement transfer, and
     # `ledger.transfer` already validates and locks it properly at that
     # point (see decisions.md on why an unlocked pre-check would be a bug).
+    _validate_participants(session, payer_account_id, [acc for acc, _ in shares])
     total_amount = sum(amount for _, amount in shares)
 
     tag = ledger.get_or_create_tag(session, tag_name)
@@ -77,7 +139,9 @@ def _get_share_or_404(session: Session, expense_id: int, share_id: int) -> Expen
     return share
 
 
-def settle_share(session: Session, *, expense_id: int, share_id: int) -> ExpenseShare:
+def settle_share(
+    session: Session, *, expense_id: int, share_id: int, acting_account_id: int
+) -> ExpenseShare:
     """Pays one participant's share of an expense: a real transfer from
     their account to the payer's account.
 
@@ -93,8 +157,13 @@ def settle_share(session: Session, *, expense_id: int, share_id: int) -> Expense
     under real concurrency in test_concurrency.py — is what actually closes
     the race, not a lock here.
     """
-    expense = get_expense(session, expense_id)
+    expense = get_expense(session, expense_id, viewer_account_id=acting_account_id)
     share = _get_share_or_404(session, expense_id, share_id)
+    # Only the debtor can pay their own share: settling moves money *out of*
+    # share.account_id, so anyone else doing it would be spending someone
+    # else's balance.
+    if share.account_id != acting_account_id:
+        raise ForbiddenError("Solo quien debe esta parte puede pagarla.")
 
     if share.status == ExpenseShareStatus.paid:
         return share  # already settled: a no-op, not an error
