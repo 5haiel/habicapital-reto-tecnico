@@ -8,7 +8,7 @@ logic. See decisions.md, "Feature elegida: tags + split de gasto".
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.models import Account, Expense, ExpenseShare, ExpenseShareStatus
+from app.models import Account, Expense, ExpenseShare, ExpenseShareStatus, Tag
 from app.services import ledger
 from app.services.errors import (
     AccountNotFoundError,
@@ -174,8 +174,15 @@ def settle_share(
         to_account_id=expense.payer_account_id,
         amount=share.amount_owed,
         idempotency_key=f"expense-share-settle-{share.id}",
-        description=f"Pago de parte del gasto #{expense.id}",
-        tag_name=None,
+        # Reads as context in both people's history ("Parte de: Cena de
+        # cumpleaños") and inherits the expense's tag, so filtering history by
+        # #cena also finds what was paid for it.
+        description=(
+            f"Parte de: {expense.description}"
+            if expense.description
+            else "Parte de un gasto compartido"
+        ),
+        tag_name=session.get(Tag, expense.tag_id).name if expense.tag_id else None,
     )
 
     share.status = ExpenseShareStatus.paid

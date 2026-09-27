@@ -39,6 +39,10 @@ class UserRead(BaseModel):
     created_at: datetime
 
 
+class SessionRead(BaseModel):
+    user: UserRead | None
+
+
 class UserPublic(BaseModel):
     """What other people can see about a user: enough to pick them as a
     recipient, never their balance or history.

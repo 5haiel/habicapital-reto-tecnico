@@ -3,5 +3,10 @@
   "references": [
     { "path": "./tsconfig.app.json" },
     { "path": "./tsconfig.node.json" }
-  ]
+  ],
+  // Tooling like the shadcn CLI reads the ROOT tsconfig to resolve the `@/`
+  // alias; without this it wrote components into a literal `@/` folder.
+  "compilerOptions": {
+    "paths": { "@/*": ["./src/*"] }
+  }
 }

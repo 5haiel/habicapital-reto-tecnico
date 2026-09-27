@@ -113,3 +113,16 @@ def test_list_expenses_returns_newest_first(make_client):
 
     ids_in_order = [e["id"] for e in ana.client.get("/expenses").json()]
     assert ids_in_order == [second["id"], first["id"]]
+
+
+def test_settlement_movement_carries_the_expense_context(make_client):
+    ana = signup(make_client, "Ana")
+    beto = signup(make_client, "Beto")
+    beto.deposit(5_000, "d1")
+    expense = ana.create_expense([(beto, 1_500)], description="Cena", tag="cena").json()
+
+    beto.settle(expense["id"], expense["shares"][0]["id"])
+
+    (received,) = ana.client.get("/me/movements").json()
+    assert received["description"] == "Parte de: Cena"
+    assert received["tag"] == "cena"

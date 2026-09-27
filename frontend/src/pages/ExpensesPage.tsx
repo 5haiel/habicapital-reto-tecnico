@@ -1,323 +1,202 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { Check, Clock, HandCoins, Receipt, SplitSquareHorizontal } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
 
-import { Badge } from '@/components/ui/badge'
+import { UserAvatar } from '@/components/brand/UserAvatar'
+import { EmptyState, ErrorState } from '@/components/EmptyState'
+import { NewExpenseDialog, type ExpenseMode } from '@/components/expenses/NewExpenseDialog'
+import { PayShareDialog } from '@/components/expenses/PayShareDialog'
+import { PageHeader, Panel } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
+import { Segmented } from '@/components/ui/segmented'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ApiError, api } from '@/lib/api'
+import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { api } from '@/lib/api'
 import { formatCurrency } from '@/lib/currency'
-import type { Account } from '@/types/api'
+import { paidCount, pendingTotal, type OwedShare } from '@/lib/expenses'
+import { formatDay } from '@/lib/format'
+import { queryKeys } from '@/lib/queryKeys'
+import { useSession } from '@/lib/session'
+import { cn } from '@/lib/utils'
+import type { Expense, ExpenseShareStatus } from '@/types/api'
 
-interface ShareRow {
-  accountId: string
-  amount: string
+type Tab = 'mine' | 'included'
+
+function StatusBadge({ status }: { status: ExpenseShareStatus }) {
+  return status === 'paid' ? (
+    <span className="inline-flex items-center gap-1 rounded-full bg-positive-soft px-2 py-0.5 text-[11px] font-semibold text-positive">
+      <Check className="size-3" strokeWidth={3} aria-hidden /> Pagado
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-accent-foreground">
+      <Clock className="size-3" aria-hidden /> Pendiente
+    </span>
+  )
 }
 
-function accountName(accounts: Account[] | undefined, id: number): string {
-  return accounts?.find((a) => a.id === id)?.name ?? `Cuenta #${id}`
+function ExpenseMeta({ expense }: { expense: Expense }) {
+  return (
+    <p className="mt-0.5 text-xs text-muted-foreground">
+      {formatDay(expense.created_at)}
+      {expense.tag && <> · #{expense.tag}</>}
+    </p>
+  )
+}
+
+function PaidByMeCard({ expense }: { expense: Expense }) {
+  const paid = paidCount(expense)
+  const pending = pendingTotal(expense)
+  return (
+    <li className="py-5 first:pt-2">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="truncate font-medium">{expense.description ?? 'Gasto compartido'}</p>
+          <ExpenseMeta expense={expense} />
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-xs text-muted-foreground">Te deben</p>
+          <p className="amount font-semibold">{formatCurrency(expense.total_amount)}</p>
+          <p className="text-xs text-muted-foreground">
+            {pending > 0 ? <>Falta <span className="amount">{formatCurrency(pending)}</span></> : 'Todos pagaron'}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn('h-full rounded-full transition-all', pending === 0 ? 'bg-positive' : 'bg-primary')}
+            style={{ width: `${(paid / expense.shares.length) * 100}%` }}
+          />
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {paid}/{expense.shares.length}
+        </span>
+      </div>
+      <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+        {expense.shares.map((share) => (
+          <li key={share.id} className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2">
+            <UserAvatar name={share.account_name} className="size-7 text-[10px]" />
+            <span className="min-w-0 flex-1 truncate text-sm">{share.account_name}</span>
+            <span className="amount text-sm">{formatCurrency(share.amount_owed)}</span>
+            <StatusBadge status={share.status} />
+          </li>
+        ))}
+      </ul>
+    </li>
+  )
 }
 
 export default function ExpensesPage() {
-  const queryClient = useQueryClient()
+  useDocumentTitle('Gastos compartidos')
+  const { user } = useSession()
+  const expenses = useQuery({ queryKey: queryKeys.expenses, queryFn: api.expenses.list })
+  const [tab, setTab] = useState<Tab>('included')
+  const [dialogMode, setDialogMode] = useState<ExpenseMode>('split')
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [payerId, setPayerId] = useState('')
-  const [description, setDescription] = useState('')
-  const [tag, setTag] = useState('')
-  const [shares, setShares] = useState<ShareRow[]>([{ accountId: '', amount: '' }])
-
-  const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: api.accounts.list })
-  const expensesQuery = useQuery({ queryKey: ['expenses'], queryFn: api.expenses.list })
-
-  const resetForm = () => {
-    setPayerId('')
-    setDescription('')
-    setTag('')
-    setShares([{ accountId: '', amount: '' }])
+  const openDialog = (mode: ExpenseMode) => {
+    setDialogMode(mode)
+    setDialogOpen(true)
   }
+  const [payTarget, setPayTarget] = useState<OwedShare | null>(null)
 
-  const createExpense = useMutation({
-    mutationFn: () =>
-      api.expenses.create({
-        payer_account_id: Number(payerId),
-        description: description || undefined,
-        tag: tag || undefined,
-        shares: shares
-          .filter((s) => s.accountId && Number(s.amount) > 0)
-          .map((s) => ({
-            account_id: Number(s.accountId),
-            amount_owed: Math.round(Number(s.amount) * 100),
-          })),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses'] })
-      setDialogOpen(false)
-      resetForm()
-      toast.success('Gasto creado')
-    },
-    onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : 'No se pudo crear el gasto')
-    },
-  })
-
-  const settleShare = useMutation({
-    mutationFn: ({ expenseId, shareId }: { expenseId: number; shareId: number }) =>
-      api.expenses.settleShare(expenseId, shareId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['expenses'] })
-      queryClient.invalidateQueries({ queryKey: ['accounts'] })
-      toast.success('Parte saldada')
-    },
-    onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : 'No se pudo saldar la parte')
-    },
-  })
-
-  const validShares = shares.filter((s) => s.accountId && Number(s.amount) > 0)
-  const canSubmit = payerId && validShares.length > 0
+  if (!user) return null
+  const me = user.account_id
+  const paidByMe = (expenses.data ?? []).filter((e) => e.payer_account_id === me)
+  const included: OwedShare[] = (expenses.data ?? []).flatMap((expense) =>
+    expense.shares.filter((s) => s.account_id === me).map((share) => ({ expense, share })),
+  )
+  // Pending first, then most recent.
+  included.sort((a, b) => Number(a.share.status === 'paid') - Number(b.share.status === 'paid'))
+  const pendingCount = included.filter((i) => i.share.status === 'pending').length
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Gastos grupales</h1>
-          <p className="text-sm text-muted-foreground">
-            Alguien paga por todos, cada quien salda su parte cuando puede.
-          </p>
+    <>
+      <PageHeader
+        title="Gastos compartidos"
+        actions={
+          <>
+            <Button variant="outline" size="lg" onClick={() => openDialog('charge')}>
+              <HandCoins />
+              Cobrar
+            </Button>
+            <Button size="lg" onClick={() => openDialog('split')}>
+              <SplitSquareHorizontal />
+              Dividir gasto
+            </Button>
+          </>
+        }
+      />
+
+      <Panel>
+        <div className="border-b pb-5">
+          <Segmented
+            label="Ver gastos"
+            value={tab}
+            onValueChange={setTab}
+            options={[
+              { value: 'included', label: pendingCount ? `Te incluyeron (${pendingCount})` : 'Te incluyeron' },
+              { value: 'mine', label: 'Pagaste tú' },
+            ]}
+          />
         </div>
-        <Dialog
-          open={dialogOpen}
-          onOpenChange={(open) => {
-            setDialogOpen(open)
-            if (!open) resetForm()
-          }}
-        >
-          <DialogTrigger render={<Button />}>
-            <Plus className="size-4" />
-            Nuevo gasto
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-lg">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (canSubmit) createExpense.mutate()
-              }}
-            >
-              <DialogHeader>
-                <DialogTitle>Nuevo gasto grupal</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <Label htmlFor="expense-payer">¿Quién pagó?</Label>
-                  <Select value={payerId} onValueChange={(v) => setPayerId(v ?? '')}>
-                    <SelectTrigger id="expense-payer" className="w-full">
-                      <SelectValue placeholder="Elige una cuenta">
-                        {(value: string | null) =>
-                          value ? accountName(accountsQuery.data, Number(value)) : 'Elige una cuenta'
-                        }
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(accountsQuery.data ?? []).map((a) => (
-                        <SelectItem key={a.id} value={String(a.id)}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="expense-description">Descripción (opcional)</Label>
-                  <Input
-                    id="expense-description"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Cena de cumpleaños"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="expense-tag">Tag (opcional)</Label>
-                  <Input
-                    id="expense-tag"
-                    value={tag}
-                    onChange={(e) => setTag(e.target.value)}
-                    placeholder="salida con amigos"
-                  />
-                </div>
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <Label>¿Quién debe, y cuánto?</Label>
-                  {shares.map((row, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <Select
-                        value={row.accountId}
-                        onValueChange={(value) =>
-                          setShares((prev) =>
-                            prev.map((s, idx) =>
-                              idx === i ? { ...s, accountId: value ?? '' } : s,
-                            ),
-                          )
-                        }
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Cuenta">
-                            {(value: string | null) =>
-                              value ? accountName(accountsQuery.data, Number(value)) : 'Cuenta'
-                            }
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(accountsQuery.data ?? [])
-                            .filter((a) => String(a.id) !== payerId)
-                            .map((a) => (
-                              <SelectItem key={a.id} value={String(a.id)}>
-                                {a.name}
-                              </SelectItem>
-                            ))}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        className="w-28 shrink-0"
-                        placeholder="Monto"
-                        value={row.amount}
-                        onChange={(e) =>
-                          setShares((prev) =>
-                            prev.map((s, idx) =>
-                              idx === i ? { ...s, amount: e.target.value } : s,
-                            ),
-                          )
-                        }
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        disabled={shares.length === 1}
-                        onClick={() => setShares((prev) => prev.filter((_, idx) => idx !== i))}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
+        {expenses.isPending ? (
+          <div className="space-y-3 pt-5">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        ) : expenses.isError ? (
+          <ErrorState onRetry={() => expenses.refetch()} />
+        ) : tab === 'included' ? (
+          included.length === 0 ? (
+            <EmptyState
+              icon={Receipt}
+              title="Nadie te ha incluido en un gasto"
+              description="Cuando alguien divida un gasto contigo o te cobre, aparecerá aquí."
+            />
+          ) : (
+            <ul className="divide-y">
+              {included.map((item) => (
+                <li key={item.share.id} className="flex flex-wrap items-center gap-3 py-4">
+                  <UserAvatar name={item.expense.payer_name} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{item.expense.description ?? 'Gasto compartido'}</p>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      Pagó {item.expense.payer_name} · {formatDay(item.expense.created_at)}
+                      {item.expense.tag && <> · #{item.expense.tag}</>}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <p className="amount font-semibold">{formatCurrency(item.share.amount_owed)}</p>
+                      <StatusBadge status={item.share.status} />
                     </div>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setShares((prev) => [...prev, { accountId: '', amount: '' }])}
-                  >
-                    <Plus className="size-3.5" />
-                    Agregar persona
-                  </Button>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button type="submit" disabled={!canSubmit || createExpense.isPending}>
-                  {createExpense.isPending ? 'Creando…' : 'Crear gasto'}
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </div>
+                    {item.share.status === 'pending' && (
+                      <Button onClick={() => setPayTarget(item)}>Pagar</Button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )
+        ) : paidByMe.length === 0 ? (
+          <EmptyState
+            icon={SplitSquareHorizontal}
+            title="No has dividido ningún gasto"
+            description="Registra lo que pagaste por otros y cada quien paga su parte desde su cuenta."
+            action={<Button onClick={() => openDialog('split')}>Dividir un gasto</Button>}
+          />
+        ) : (
+          <ul className="divide-y">
+            {paidByMe.map((e) => (
+              <PaidByMeCard key={e.id} expense={e} />
+            ))}
+          </ul>
+        )}
+      </Panel>
 
-      {expensesQuery.isLoading && (
-        <div className="space-y-3">
-          <Skeleton className="h-28 w-full" />
-          <Skeleton className="h-28 w-full" />
-        </div>
-      )}
-
-      {expensesQuery.data && expensesQuery.data.length === 0 && (
-        <Card>
-          <CardContent className="py-12 text-center text-sm text-muted-foreground">
-            Todavía no hay gastos grupales. Crea uno con "Nuevo gasto".
-          </CardContent>
-        </Card>
-      )}
-
-      <div className="space-y-4">
-        {expensesQuery.data?.map((expense) => (
-          <Card key={expense.id}>
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div>
-                  <CardTitle className="text-base">
-                    {expense.description || 'Gasto grupal'}
-                  </CardTitle>
-                  <CardDescription>
-                    Pagado por {accountName(accountsQuery.data, expense.payer_account_id)} ·{' '}
-                    {formatCurrency(expense.total_amount)}
-                  </CardDescription>
-                </div>
-                {expense.tag && <Badge variant="secondary">{expense.tag}</Badge>}
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ul className="divide-y">
-                {expense.shares.map((share) => (
-                  <li key={share.id} className="flex items-center justify-between py-2 text-sm">
-                    <span>{accountName(accountsQuery.data, share.account_id)}</span>
-                    <div className="flex items-center gap-3">
-                      <span className="tabular-nums text-muted-foreground">
-                        {formatCurrency(share.amount_owed)}
-                      </span>
-                      {share.status === 'paid' ? (
-                        <Badge variant="outline" className="text-positive">
-                          Pagado
-                        </Badge>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={settleShare.isPending}
-                          onClick={() =>
-                            settleShare.mutate({ expenseId: expense.id, shareId: share.id })
-                          }
-                        >
-                          Saldar
-                        </Button>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    </div>
+      <NewExpenseDialog key={dialogMode} mode={dialogMode} open={dialogOpen} onOpenChange={setDialogOpen} />
+      <PayShareDialog target={payTarget} onClose={() => setPayTarget(null)} />
+    </>
   )
 }

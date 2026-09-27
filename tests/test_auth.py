@@ -158,3 +158,14 @@ def test_change_password_replaces_old_one(make_client):
 
     assert _login(make_client()).status_code == 401
     assert _login(make_client(), password="nueva-clave-22").status_code == 200
+
+
+def test_session_endpoint_reports_signed_out_without_error(client):
+    response = client.get("/auth/session")
+    assert response.status_code == 200
+    assert response.json() == {"user": None}
+
+
+def test_session_endpoint_returns_user_when_signed_in(client):
+    user_id = _register(client).json()["id"]
+    assert client.get("/auth/session").json()["user"]["id"] == user_id

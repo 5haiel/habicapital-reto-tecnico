@@ -1,16 +1,18 @@
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 
 from app.core.config import settings
-from app.deps import CurrentUser, SessionDep
+from app.deps import CurrentUser, SessionDep, get_current_user
 from app.models import User
 from app.schemas import (
     LoginRequest,
     PasswordChange,
     ProfileUpdate,
     RegisterRequest,
+    SessionRead,
     UserRead,
 )
 from app.services import auth
+from app.services.errors import NotAuthenticatedError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -50,6 +52,18 @@ def login(payload: LoginRequest, response: Response, session: SessionDep) -> Use
 @router.post("/logout", status_code=204)
 def logout(response: Response) -> None:
     response.delete_cookie(settings.session_cookie_name, path="/")
+
+
+@router.get("/session", response_model=SessionRead)
+def read_session(request: Request, session: SessionDep) -> SessionRead:
+    """Who is signed in, or `user: null` — always 200. A signed-out visitor
+    is a normal state for the SPA's first load, not an error (unlike
+    /auth/me, which requires a session and answers 401 without one).
+    """
+    try:
+        return SessionRead(user=get_current_user(request, session))
+    except NotAuthenticatedError:
+        return SessionRead(user=None)
 
 
 @router.get("/me", response_model=UserRead)
